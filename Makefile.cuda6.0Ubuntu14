@@ -1,6 +1,6 @@
 #!/usr/bin/make -f
 
-NVIDIA_SDK = /usr/local/cuda-6.5/samples
+NVIDIA_SDK = /usr/local/cuda-6.0/samples
 
 NVCC_ARCHES += -gencode arch=compute_35,code=sm_35
 #NVCC_ARCHES += -gencode arch=compute_20,code=sm_21

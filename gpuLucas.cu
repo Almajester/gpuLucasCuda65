@@ -159,6 +159,9 @@
 *   Cuda 5.5 Timings:  On NVIDIA Titan, w/ compute capability 3.5
 *    M1257787 to   153.8 sec, with wd = (19, 20)
 *    M3021377 to   714.7 sec, with wd = (18, 19)
+* 5/21/2014:
+*   Cuda 6.5 Timings:  Same config:
+*    M3021377 to   711.8 sec, with wd = (18, 19), lol, love the improvement
 */
 
 // includes, system
@@ -199,13 +202,17 @@ const int M_43112609 = 43112609; // FFT runlength 2359296 = 2^21 + 2^18 = 2^18*3
 // M_86225219 is not prime
 const int M_86225219 = 86225219;
 
+// LATEST!  January, 2013, Curtis Cooper found M_57885161
+const int M_57885161 = 57885161;
+//const int SIGNAL_SIZE = 4194304;// 2**22
+//const int SIGNAL_SIZE = 3670016; // 2**19*7
 /**
  * Currently need to set testPrime and signalSize in main()
  * These were some example values.
  */
 //const int TESTPRIME = M_859433; const int SIGNAL_SIZE = 49152;
 //const int TESTPRIME = M_1257787; const int SIGNAL_SIZE = 65536;
-//const int TESTPRIME = M_3021377; const int SIGNAL_SIZE = 163840;
+const int TESTPRIME = M_3021377; const int SIGNAL_SIZE = 163840;
 //const int TESTPRIME = M_42643801; const int SIGNAL_SIZE = 2359296;
 //const int TESTPRIME = M_43112609; const int SIGNAL_SIZE = 2359296;
 
@@ -413,16 +420,18 @@ int main(int argc, char** argv)
 	 */
 //	int testPrime = M_1257787;
 //	int signalSize = 65536;
-	int testPrime = M_3021377;
-	int signalSize = 163840;
-
+//	int testPrime = M_3021377;
+//	int signalSize = 163840;
+	int testPrime = TESTPRIME;
+	int signalSize = SIGNAL_SIZE;
 	// BEGIN by initializing constant memory on device
 	initConstantSymbols(testPrime, signalSize);
 
 	// Based on the problem size, and runlength, set the number of carry digits
 	//   and assign the global slice-and-dice function from the templated
 	//   llintToBalInt<n>() function
-	setSliceAndDice(2); // 2 is for the wd (18, 19) used by some typical examples
+	//	setSliceAndDice(2); // 2 is for the wd (18, 19) used by some typical examples
+	setSliceAndDice(2);
 	/**
 	 * END OF COMPILE-TIME SECTION
 	 */
