@@ -162,6 +162,9 @@
 * 5/21/2014:
 *   Cuda 6.5 Timings:  Same config:
 *    M3021377 to   711.8 sec, with wd = (18, 19), lol, love the improvement
+* 5/22/2014:
+*   Switched to static libraries libcudart_static.a and libcufft_static.a
+*    M3021377 to   635.9 sec, with wd = (18, 19), yeah, like that.
 */
 
 // includes, system
