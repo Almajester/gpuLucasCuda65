@@ -6,7 +6,7 @@
 
 NVIDIA_SDK = /usr/local/cuda-6.5/samples
 NVLIBDIR = /usr/local/cuda-6.5/lib64
-NVLIBS = -L$(NVLIBDIR) -lcudart_static -lcufft_static -lcuos -lculibos
+NVLIBS = -L$(NVLIBDIR) -lcudart -lcufft_static -lcuos -lculibos
 NVCC_ARCHES += -gencode arch=compute_35,code=sm_35
 #NVCC_ARCHES += -gencode arch=compute_20,code=sm_21
 

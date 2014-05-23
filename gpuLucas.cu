@@ -215,7 +215,7 @@ const int M_57885161 = 57885161;
  */
 //const int TESTPRIME = M_859433; const int SIGNAL_SIZE = 49152;
 //const int TESTPRIME = M_1257787; const int SIGNAL_SIZE = 65536;
-const int TESTPRIME = M_3021377; const int SIGNAL_SIZE = 163840;
+const int TESTPRIME = M_3021377; const int SIGNAL_SIZE = 163840; //2^15*5
 //const int TESTPRIME = M_42643801; const int SIGNAL_SIZE = 2359296;
 //const int TESTPRIME = M_43112609; const int SIGNAL_SIZE = 2359296;
 
