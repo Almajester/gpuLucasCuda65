@@ -163,8 +163,15 @@
 *   Cuda 6.5 Timings:  Same config:
 *    M3021377 to   711.8 sec, with wd = (18, 19), lol, love the improvement
 * 5/22/2014:
-*   Switched to static libraries libcudart_static.a and libcufft_static.a
-*    M3021377 to   635.9 sec, with wd = (18, 19), yeah, like that.
+*   Switched to static libraries libcufft_static.a
+*    M3021377 to   633.0 sec, with wd = (18, 19), yeah, like that.
+*
+* 5/23/2014:
+*   Switched from cufft.h to cufftXt.h to use store callback function
+*     following forward transform to do complex squaring.
+*   Callbacks currently not working, but did include some uniform memory
+*     features from CUDA 6.5 removing need for duplicate arrays and memcpy
+*     between host and device.
 */
 
 // includes, system
@@ -175,7 +182,7 @@
 #include <qd/dd_real.h>
 
 // includes, project
-#include <cufft.h> 
+#include <cufftXt.h> 
 #include <helper_cuda.h>
 #include <helper_timer.h>
 
@@ -514,6 +521,24 @@ static __global__ void ComplexPointwiseSqr(Complex* cval, int size)
 		cval[tid] = c;
 	}
 } 
+
+
+/** 
+ * LET'S do the above with a cuFFT callback using the new CUDA6.5
+ * callback protocols
+ */
+
+__device__ void complexPointwiseSqrCB(size_t offset, void *dataOut,
+									  Complex element, void *callerInfo,
+									  void *sharedPointer) {
+   Complex temp = element;
+   element.y = 2.0*temp.x*temp.y;
+   element.x = temp.x*temp.x - temp.y*temp.y;
+   ((Complex *)dataOut)[offset] = element;
+}
+
+__device__ cufftCallbackStoreZ csquareCBptr = (cufftCallbackStoreZ) complexPointwiseSqrCB;
+
 
 /**
  * compute A and Ainv in extended precision, cast to doubles
@@ -989,15 +1014,11 @@ void mersenneTest(int testPrime, int signalSize) {
 
 	int llintSignalSize = sizeof(long long int)*signalSize;
 
-	Real *dev_A, *dev_Ainv;
 	unsigned char *bitsPerWord8;
 	long long int *llint_signal;
 	checkCudaErrors(cudaMalloc((void**)&i_signalOUT, i_sizeOUT));
 	checkCudaErrors(cudaMalloc((void**)&d_signal, d_size));
 	checkCudaErrors(cudaMalloc((void**)&z_signal, z_size));
-
-	checkCudaErrors(cudaMalloc((void**)&dev_A, d_size));
-	checkCudaErrors(cudaMalloc((void**)&dev_Ainv, d_size));
 	checkCudaErrors(cudaMalloc((void**)&bitsPerWord8, bpw_size));
 	checkCudaErrors(cudaMalloc((void**)&llint_signal, llintSignalSize));
 
@@ -1006,6 +1027,17 @@ void mersenneTest(int testPrime, int signalSize) {
 	cufftHandle plan1, plan2;
 	checkCudaErrors(cufftPlan1d(&plan1, signalSize, CUFFT_TYPEFORWARD, 1));
 	checkCudaErrors(cufftPlan1d(&plan2, signalSize, CUFFT_TYPEINVERSE, 1));
+
+	/** xxAT ** get callbackPtr for fftCallback squaring */
+	cufftCallbackStoreZ hostCopyPtr;
+   	checkCudaErrors(cudaMemcpyFromSymbol(&hostCopyPtr, csquareCBptr,
+										 sizeof(hostCopyPtr)));
+	cufftCallbackStoreZ pters[1];
+	pters[0] = hostCopyPtr;
+	fprintf(stderr, "The host pointer to the device function is %lld\n", hostCopyPtr);
+	fflush(stderr);
+	checkCudaErrors(cufftXtSetCallback(plan1, (void **) pters,
+									   CUFFT_CB_ST_COMPLEX_DOUBLE, NULL));
 
 	// Array for high-bit carry out
 	int *i_hiBitArr;
@@ -1021,14 +1053,12 @@ void mersenneTest(int testPrime, int signalSize) {
 	computeBitsPerWordVectors(h_bitsPerWord8, h_bitsPerWord, signalSize);
 	checkCudaErrors(cudaMemcpy(bitsPerWord8, h_bitsPerWord8, bpw_size, cudaMemcpyHostToDevice));
 
-	// compute weights in extended precision, essential for non-power-of-two signal_size,
-	//   and then load to device
-	double *h_A = (double *) malloc(signalSize*sizeof(double));
-	double *h_Ainv = (double *) malloc(signalSize*sizeof(double));
-	computeWeightVectors(h_A, h_Ainv, testPrime, signalSize);
-	checkCudaErrors(cudaMemcpy(dev_A, h_A, sizeof(double)*signalSize, cudaMemcpyHostToDevice));
-	checkCudaErrors(cudaMemcpy(dev_Ainv, h_Ainv, sizeof(double)*signalSize, cudaMemcpyHostToDevice));
-
+	// compute weights in extended precision, essential for non-power-of-two signal_size
+	Real *dev_A, *dev_Ainv;
+	checkCudaErrors(cudaMallocManaged(&dev_A, signalSize*sizeof(double)));
+	checkCudaErrors(cudaMallocManaged(&dev_Ainv, signalSize*sizeof(double)));
+	computeWeightVectors(dev_A, dev_Ainv, testPrime, signalSize);
+	
 	// load the int array to the doubles for FFT
 	// This is already balanced, and already multiplied by a_0 = 1 for DWT
 	loadValue4ToFFTarray<<<numBlocks, T_PER_B>>>(d_signal, signalSize);
@@ -1110,8 +1140,6 @@ void mersenneTest(int testPrime, int signalSize) {
 	free(h_bases);
 	free(h_bitsPerWord);
 	free(h_bitsPerWord8);
-	free(h_A);
-	free(h_Ainv);
 	free(host_errArr);
 
 	checkCudaErrors(cudaFree(i_signalOUT));
