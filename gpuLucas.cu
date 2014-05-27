@@ -303,8 +303,8 @@ static __host__ void initConstantSymbols(int testPrime, int signalSize) {
 }
 
 // Complex data type
-typedef cufftDoubleComplex Complex;
-typedef cufftDoubleReal Real;
+typedef cufftDoubleComplex dbComplex;
+typedef cufftDoubleReal dbReal;
 #define CUFFT_TYPEFORWARD CUFFT_D2Z
 #define CUFFT_TYPEINVERSE CUFFT_Z2D
 #define CUFFT_EXECFORWARD cufftExecD2Z
@@ -315,7 +315,7 @@ typedef cufftDoubleReal Real;
  *   but give an overview of the functions so left it.
  */
 
-static __global__ void ComplexPointwiseSqr(Complex*, int);
+static __global__ void ComplexPointwiseSqr(dbComplex*, int);
 static __global__ void loadValue4ToFFTarray(double*, int);
 static __global__ void loadIntToDoubleIBDWT(double *dArr, int *iArr, int *iHiArr, double *aArr, int size);
 
@@ -509,9 +509,9 @@ int main(int argc, char** argv)
  */
 
 // Complex pointwise multiplication
-static __global__ void ComplexPointwiseSqr(Complex* cval, int size)
+static __global__ void ComplexPointwiseSqr(dbComplex* cval, int size)
 {
-	Complex c, temp;
+	dbComplex c, temp;
 	const int tid = blockIdx.x*blockDim.x + threadIdx.x;
 	if (tid < size) {
 		temp = cval[tid];
@@ -529,16 +529,24 @@ static __global__ void ComplexPointwiseSqr(Complex* cval, int size)
  */
 
 __device__ void complexPointwiseSqrCB(size_t offset, void *dataOut,
-									  Complex element, void *callerInfo,
+									  dbComplex element, void *callerInfo,
 									  void *sharedPointer) {
-   Complex temp = element;
+   dbComplex temp = element;
    element.y = 2.0*temp.x*temp.y;
    element.x = temp.x*temp.x - temp.y*temp.y;
-   ((Complex *)dataOut)[offset] = element;
+   ((dbComplex *)dataOut)[offset] = element;
 }
 
 __device__ cufftCallbackStoreZ csquareCBptr = (cufftCallbackStoreZ) complexPointwiseSqrCB;
 
+__device__ dbComplex complexPointwiseSqrLOADCB(size_t offset, void *dataOut,
+										  dbComplex element, void *callerInfo,
+										  void *sharedPointer) {
+   dbComplex temp = element;
+   element.y = 2.0*temp.x*temp.y;
+   element.x = temp.x*temp.x - temp.y*temp.y;
+   ((dbComplex *)dataOut)[offset] = element;
+}
 
 /**
  * compute A and Ainv in extended precision, cast to doubles
@@ -706,16 +714,16 @@ float errorTrial(int testIterations, int testPrime, int signalSize) {
 
 	// Allocate device memory for signal
 	int *i_signalOUT;
-	Real *d_signal;
-	Complex *z_signal;
+	dbReal *d_signal;
+	dbComplex *z_signal;
 	int i_sizeOUT = sizeof(int)*signalSize;
-	int d_size = sizeof(Real)*signalSize;
-	int z_size = sizeof(Complex)*(signalSize/2 + 1);
+	int d_size = sizeof(dbReal)*signalSize;
+	int z_size = sizeof(dbComplex)*(signalSize/2 + 1);
 	int bpw_size = sizeof(unsigned char)*signalSize;
 
 	int llintSignalSize = sizeof(long long int)*signalSize;
 
-	Real *dev_A, *dev_Ainv;
+	dbReal *dev_A, *dev_Ainv;
 	unsigned char *bitsPerWord8;
 	long long int *llint_signal;
 	checkCudaErrors(cudaMalloc((void**)&i_signalOUT, i_sizeOUT));
@@ -794,7 +802,7 @@ float errorTrial(int testIterations, int testPrime, int signalSize) {
 			checkCudaErrors(cudaEventRecord(start, 0));
 
 			// Transform signal
-			checkCudaErrors(CUFFT_EXECFORWARD(plan1, (Real *)d_signal, (Complex *)z_signal));
+			checkCudaErrors(CUFFT_EXECFORWARD(plan1, (dbReal *)d_signal, (dbComplex *)z_signal));
 			getLastCudaError("Kernel execution failed [ CUFFT_EXECFORWARD ]");
 			// Multiply the coefficients componentwise
 			int numFFTblocks = (signalSize/2 + 1)/T_PER_B + 1;
@@ -804,7 +812,7 @@ float errorTrial(int testIterations, int testPrime, int signalSize) {
 			getLastCudaError("Kernel execution failed [ ComplexPointwiseSqr ]");
 
 			// Transform signal back
-			checkCudaErrors(CUFFT_EXECINVERSE(plan2, (Complex *)z_signal, (Real *)d_signal));
+			checkCudaErrors(CUFFT_EXECINVERSE(plan2, (dbComplex *)z_signal, (dbReal *)d_signal));
 			getLastCudaError("Kernel execution failed [ CUFFT_EXECINVERSE ]");
 
 			checkCudaErrors(cudaEventRecord(stop, 0));
@@ -842,7 +850,7 @@ float errorTrial(int testIterations, int testPrime, int signalSize) {
 		}
 		else {
 			// Transform signal
-			checkCudaErrors(CUFFT_EXECFORWARD(plan1, (Real *)d_signal, (Complex *)z_signal));
+			checkCudaErrors(CUFFT_EXECFORWARD(plan1, (dbReal *)d_signal, (dbComplex *)z_signal));
 			getLastCudaError("Kernel execution failed [ CUFFT_EXECFORWARD ]");
 			// Multiply the coefficients componentwise
 			int numFFTblocks = (signalSize/2 + 1)/T_PER_B + 1;
@@ -851,7 +859,7 @@ float errorTrial(int testIterations, int testPrime, int signalSize) {
 			getLastCudaError("Kernel execution failed [ ComplexPointwiseSqr ]");
 
 			// Transform signal back
-			checkCudaErrors(CUFFT_EXECINVERSE(plan2, (Complex *)z_signal, (Real *)d_signal));
+			checkCudaErrors(CUFFT_EXECINVERSE(plan2, (dbComplex *)z_signal, (dbReal *)d_signal));
 			getLastCudaError("Kernel execution failed [ CUFFT_EXECINVERSE ]");
 
 			invDWTproductMinus2<<<numBlocks, T_PER_B>>>(llint_signal, d_signal, dev_Ainv, signalSize);
@@ -1005,11 +1013,11 @@ void mersenneTest(int testPrime, int signalSize) {
 
 	// Allocate device memory for signal
 	int *i_signalOUT;
-	Real *d_signal;
-	Complex *z_signal;
+	dbReal *d_signal;
+	dbComplex *z_signal;
 	int i_sizeOUT = sizeof(int)*signalSize;
-	int d_size = sizeof(Real)*signalSize;
-	int z_size = sizeof(Complex)*(signalSize/2 + 1);
+	int d_size = sizeof(dbReal)*signalSize;
+	int z_size = sizeof(dbComplex)*(signalSize/2 + 1);
 	int bpw_size = sizeof(unsigned char)*signalSize;
 
 	int llintSignalSize = sizeof(long long int)*signalSize;
@@ -1034,10 +1042,10 @@ void mersenneTest(int testPrime, int signalSize) {
 										 sizeof(hostCopyPtr)));
 	cufftCallbackStoreZ pters[1];
 	pters[0] = hostCopyPtr;
-	fprintf(stderr, "The host pointer to the device function is %lld\n", hostCopyPtr);
+	fprintf(stderr, "The host pointer to the device function is %d\n", hostCopyPtr);
 	fflush(stderr);
-	checkCudaErrors(cufftXtSetCallback(plan1, (void **) pters,
-									   CUFFT_CB_ST_COMPLEX_DOUBLE, NULL));
+   	checkCudaErrors(cufftXtSetCallback(plan1, (void **) pters,
+	   								   CUFFT_CB_ST_COMPLEX_DOUBLE, NULL));
 
 	// Array for high-bit carry out
 	int *i_hiBitArr;
@@ -1054,7 +1062,7 @@ void mersenneTest(int testPrime, int signalSize) {
 	checkCudaErrors(cudaMemcpy(bitsPerWord8, h_bitsPerWord8, bpw_size, cudaMemcpyHostToDevice));
 
 	// compute weights in extended precision, essential for non-power-of-two signal_size
-	Real *dev_A, *dev_Ainv;
+	dbReal *dev_A, *dev_Ainv;
 	checkCudaErrors(cudaMallocManaged(&dev_A, signalSize*sizeof(double)));
 	checkCudaErrors(cudaMallocManaged(&dev_Ainv, signalSize*sizeof(double)));
 	computeWeightVectors(dev_A, dev_Ainv, testPrime, signalSize);
@@ -1068,27 +1076,29 @@ void mersenneTest(int testPrime, int signalSize) {
 	for (unsigned int iter = 2; iter < testPrime; iter++) {
 
 		// Transform signal
-		checkCudaErrors(CUFFT_EXECFORWARD(plan1, (Real *)d_signal, (Complex *)z_signal));
+		checkCudaErrors(CUFFT_EXECFORWARD(plan1, (dbReal *)d_signal, (dbComplex *)z_signal));
 		getLastCudaError("Kernel execution failed [ CUFFT_EXECFORWARD ]");
 
+		fprintf(stderr, "Completed one forward fft at iteration %d\n", iter);
+		fflush(stderr);
 		// Multiply the coefficients componentwise
-		ComplexPointwiseSqr<<<numFFTblocks, T_PER_B>>>(z_signal, signalSize/2 + 1);
-		getLastCudaError("Kernel execution failed [ ComplexPointwiseSqr ]");
+		//		ComplexPointwiseSqr<<<numFFTblocks, T_PER_B>>>(z_signal, signalSize/2 + 1);
+		//		getLastCudaError("Kernel execution failed [ ComplexPointwiseSqr ]");
 
 		// Transform signal back
-		checkCudaErrors(CUFFT_EXECINVERSE(plan2, (Complex *)z_signal, (Real *)d_signal));
+		checkCudaErrors(CUFFT_EXECINVERSE(plan2, (dbComplex *)z_signal, (dbReal *)d_signal));
 		getLastCudaError("Kernel execution failed [ CUFFT_EXECINVERSE ]");
 
 		//    Every 1/50th of the way done, do some error testing
-		if (iter % (testPrime/50) == 0) {
+		//		if (iter % (testPrime/50) == 0) {
 			invDWTproductMinus2ERROR<<<numBlocks, T_PER_B>>>(llint_signal, d_signal, dev_Ainv, signalSize);
 			computeErrorVector<<<numBlocks, T_PER_B>>>(dev_errArr, d_signal, signalSize);
 			float maxerr = findMaxErrorHOST(dev_errArr, host_errArr, signalSize);
 			printf("\n[%d/50]: iteration %d: max abs error = %f", iter/(testPrime/50), iter, maxerr);
 			fflush(stdout);
-		}
-		else
-			invDWTproductMinus2<<<numBlocks, T_PER_B>>>(llint_signal, d_signal, dev_Ainv, signalSize);
+			//}
+			//	else
+			//invDWTproductMinus2<<<numBlocks, T_PER_B>>>(llint_signal, d_signal, dev_Ainv, signalSize);
 
 		// REBALANCE llint TIMING
 		sliceAndDice<<<numBlocks, T_PER_B>>>(i_signalOUT, i_hiBitArr, llint_signal, bitsPerWord8, signalSize);

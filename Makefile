@@ -12,6 +12,7 @@ NVCC_ARCHES += -gencode arch=compute_35,code=sm_35
 
 CFLAGS = -O3 -Wall
 NVCC_FLAGS =  -use_fast_math $(NVCC_ARCHES) --compiler-options="$(CFLAGS) -fno-strict-aliasing"
+#NVCC_FLAGS = $(NVCC_ARCHES) --compiler-options="$(CFLAGS) -fno-strict-aliasing"
 
 all: gpuLucas
 
