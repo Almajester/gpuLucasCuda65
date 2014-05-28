@@ -315,7 +315,7 @@ typedef cufftDoubleReal dbReal;
  *   but give an overview of the functions so left it.
  */
 
-static __global__ void ComplexPointwiseSqr(dbComplex*, int);
+static __global__ void dbcPointwiseSqr(dbComplex*, int);
 static __global__ void loadValue4ToFFTarray(double*, int);
 static __global__ void loadIntToDoubleIBDWT(double *dArr, int *iArr, int *iHiArr, double *aArr, int size);
 
@@ -509,7 +509,7 @@ int main(int argc, char** argv)
  */
 
 // Complex pointwise multiplication
-static __global__ void ComplexPointwiseSqr(dbComplex* cval, int size)
+static __global__ void dbcPointwiseSqr(dbComplex* cval, int size)
 {
 	dbComplex c, temp;
 	const int tid = blockIdx.x*blockDim.x + threadIdx.x;
@@ -528,7 +528,7 @@ static __global__ void ComplexPointwiseSqr(dbComplex* cval, int size)
  * callback protocols
  */
 
-__device__ void complexPointwiseSqrCB(size_t offset, void *dataOut,
+__device__ void dbcPointwiseSqrCB(size_t offset, void *dataOut,
 									  dbComplex element, void *callerInfo,
 									  void *sharedPointer) {
    dbComplex temp = element;
@@ -537,16 +537,17 @@ __device__ void complexPointwiseSqrCB(size_t offset, void *dataOut,
    ((dbComplex *)dataOut)[offset] = element;
 }
 
-__device__ cufftCallbackStoreZ csquareCBptr = (cufftCallbackStoreZ) complexPointwiseSqrCB;
+__device__ cufftCallbackStoreZ csquareCBptr = (cufftCallbackStoreZ) dbcPointwiseSqrCB;
 
-__device__ dbComplex complexPointwiseSqrLOADCB(size_t offset, void *dataOut,
-										  dbComplex element, void *callerInfo,
-										  void *sharedPointer) {
-   dbComplex temp = element;
-   element.y = 2.0*temp.x*temp.y;
-   element.x = temp.x*temp.x - temp.y*temp.y;
-   ((dbComplex *)dataOut)[offset] = element;
+__device__ dbComplex dbcPointwiseSqrLoadCB(size_t offset, void *dataIn,
+										  void *callerInfo, void *sharedPointer) {
+   dbComplex ret, element = ((dbComplex *) dataIn)[offset];
+   ret.x = element.x*element.x - element.y*element.y;
+   ret.y = 2.0*element.x*element.y;
+   return ret;
 }
+
+__device__ cufftCallbackLoadZ csquareLOADCBptr = (cufftCallbackLoadZ) dbcPointwiseSqrLoadCB;
 
 /**
  * compute A and Ainv in extended precision, cast to doubles
@@ -807,7 +808,7 @@ float errorTrial(int testIterations, int testPrime, int signalSize) {
 			// Multiply the coefficients componentwise
 			int numFFTblocks = (signalSize/2 + 1)/T_PER_B + 1;
 
-			ComplexPointwiseSqr<<<numFFTblocks, T_PER_B>>>(z_signal, signalSize/2 + 1);
+			dbcPointwiseSqr<<<numFFTblocks, T_PER_B>>>(z_signal, signalSize/2 + 1);
 
 			getLastCudaError("Kernel execution failed [ ComplexPointwiseSqr ]");
 
@@ -855,7 +856,7 @@ float errorTrial(int testIterations, int testPrime, int signalSize) {
 			// Multiply the coefficients componentwise
 			int numFFTblocks = (signalSize/2 + 1)/T_PER_B + 1;
 
-			ComplexPointwiseSqr<<<numFFTblocks, T_PER_B>>>(z_signal, signalSize/2 + 1);
+			dbcPointwiseSqr<<<numFFTblocks, T_PER_B>>>(z_signal, signalSize/2 + 1);
 			getLastCudaError("Kernel execution failed [ ComplexPointwiseSqr ]");
 
 			// Transform signal back
@@ -1037,6 +1038,7 @@ void mersenneTest(int testPrime, int signalSize) {
 	checkCudaErrors(cufftPlan1d(&plan2, signalSize, CUFFT_TYPEINVERSE, 1));
 
 	/** xxAT ** get callbackPtr for fftCallback squaring */
+	/*	
 	cufftCallbackStoreZ hostCopyPtr;
    	checkCudaErrors(cudaMemcpyFromSymbol(&hostCopyPtr, csquareCBptr,
 										 sizeof(hostCopyPtr)));
@@ -1046,6 +1048,17 @@ void mersenneTest(int testPrime, int signalSize) {
 	fflush(stderr);
    	checkCudaErrors(cufftXtSetCallback(plan1, (void **) pters,
 	   								   CUFFT_CB_ST_COMPLEX_DOUBLE, NULL));
+	*/
+
+	cufftCallbackLoadZ hostCopyPtr;
+   	checkCudaErrors(cudaMemcpyFromSymbol(&hostCopyPtr, csquareLOADCBptr,
+										 sizeof(hostCopyPtr)));
+	cufftCallbackLoadZ pters[1];
+	pters[0] = hostCopyPtr;
+	fprintf(stderr, "The host pointer to the device function is %d\n", hostCopyPtr);
+	fflush(stderr);
+	//   	checkCudaErrors(cufftXtSetCallback(plan2, (void **) pters,
+	//   								   CUFFT_CB_LD_COMPLEX_DOUBLE, NULL));
 
 	// Array for high-bit carry out
 	int *i_hiBitArr;
@@ -1079,26 +1092,26 @@ void mersenneTest(int testPrime, int signalSize) {
 		checkCudaErrors(CUFFT_EXECFORWARD(plan1, (dbReal *)d_signal, (dbComplex *)z_signal));
 		getLastCudaError("Kernel execution failed [ CUFFT_EXECFORWARD ]");
 
-		fprintf(stderr, "Completed one forward fft at iteration %d\n", iter);
-		fflush(stderr);
+		//fprintf(stderr, "Completed one forward fft at iteration %d\n", iter);
+		// fflush(stderr);
 		// Multiply the coefficients componentwise
-		//		ComplexPointwiseSqr<<<numFFTblocks, T_PER_B>>>(z_signal, signalSize/2 + 1);
-		//		getLastCudaError("Kernel execution failed [ ComplexPointwiseSqr ]");
+   		dbcPointwiseSqr<<<numFFTblocks, T_PER_B>>>(z_signal, signalSize/2 + 1);
+   		getLastCudaError("Kernel execution failed [ ComplexPointwiseSqr ]");
 
 		// Transform signal back
 		checkCudaErrors(CUFFT_EXECINVERSE(plan2, (dbComplex *)z_signal, (dbReal *)d_signal));
 		getLastCudaError("Kernel execution failed [ CUFFT_EXECINVERSE ]");
 
 		//    Every 1/50th of the way done, do some error testing
-		//		if (iter % (testPrime/50) == 0) {
+   		if (iter % (testPrime/50) == 0) {
 			invDWTproductMinus2ERROR<<<numBlocks, T_PER_B>>>(llint_signal, d_signal, dev_Ainv, signalSize);
 			computeErrorVector<<<numBlocks, T_PER_B>>>(dev_errArr, d_signal, signalSize);
 			float maxerr = findMaxErrorHOST(dev_errArr, host_errArr, signalSize);
 			printf("\n[%d/50]: iteration %d: max abs error = %f", iter/(testPrime/50), iter, maxerr);
 			fflush(stdout);
-			//}
-			//	else
-			//invDWTproductMinus2<<<numBlocks, T_PER_B>>>(llint_signal, d_signal, dev_Ainv, signalSize);
+		}
+		else
+		   invDWTproductMinus2<<<numBlocks, T_PER_B>>>(llint_signal, d_signal, dev_Ainv, signalSize);
 
 		// REBALANCE llint TIMING
 		sliceAndDice<<<numBlocks, T_PER_B>>>(i_signalOUT, i_hiBitArr, llint_signal, bitsPerWord8, signalSize);
