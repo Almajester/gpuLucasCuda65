@@ -172,6 +172,10 @@
 *   Callbacks currently not working, but did include some uniform memory
 *     features from CUDA 6.5 removing need for duplicate arrays and memcpy
 *     between host and device.
+* 5/29/2014:
+*   Bug in code because of incorrect callback function signature in CUFFT documentation
+*   example.  Fixed.  Now code works.  With pointwise squaring in forward FFT:
+*    M3021377 to   608.9 sec.  Nice.
 */
 
 // includes, system
@@ -311,47 +315,6 @@ typedef cufftDoubleReal dbReal;
 #define CUFFT_EXECINVERSE cufftExecZ2D
 
 /**
- * PREDECLARED FUNCTIONS:  these don't really need to be predeclared anymore,
- *   but give an overview of the functions so left it.
- */
-
-static __global__ void dbcPointwiseSqr(dbComplex*, int);
-static __global__ void loadValue4ToFFTarray(double*, int);
-static __global__ void loadIntToDoubleIBDWT(double *dArr, int *iArr, int *iHiArr, double *aArr, int size);
-
-/*
- * In bitsPerWord, we use a bit-vector:
- *    0 -- low base word
- *    1 -- high base word
- * Where the positions 0=current, 1=next, 2=nextnext, etc.
- *    The BASE_HI, BASE_LO, HI_BITS, LO_BITS are global constants.
- */
-static __host__ void computeBitsPerWord(int testPrime, int *bitsPerWord, int size);
-static __host__ void computeBitsPerWordVectors(unsigned char *bitsPerWord8, int *bitsPerWord, int size);
-
-/**
- * code for convolution error-checking
- */
-static __global__ void computeErrorVector(float *errorvals, double *fftOut, int size);
-static __global__ void computeMaxBitVector(float *dev_errArr, long long *llint_signal, int len);
-static __host__ float findMaxErrorHOST(float *dev_fltArr, float *host_temp, int len);
-
-/**
- * compute A and Ainv in extended precision, cast to doubles
- *   and load them to the host arrays.  We include the FFT 1/N scaling with
- *   host_ainv and pull it out of the pointwiseSqrAndScale code
- */
-static __host__ void computeWeightVectors(double *host_A, double *host_Ainv, int testPrime, int size);
-
-/**
- * This completes the invDWT transform by multiplying the signal by a_inv,
- *   and subtracts 2 from signal[0], requiring no carry in current weighted carry-save state
- */
-static __global__ void invDWTproductMinus2ERROR(long long int *llintArr, double *signal, double *a_inv, int size);
-static __global__ void invDWTproductMinus2(long long int *llintArr, double *signal, double *a_inv, int size);
-
-
-/**
  * The sliceAndDice() function pointer is used to call the correct templated
  *   kernel function to do the distribution of convolution product-bits to
  *   higher-order digits.
@@ -385,9 +348,6 @@ void setSliceAndDice(int carryDigits) {
 		break;
 	}
 }
-
-////////////////////////////////////////////////////////////////////////////////
-// declaration, forward
 
 /**
  * errorTrial() outputs timing and error information and returns
@@ -522,13 +482,12 @@ static __global__ void dbcPointwiseSqr(dbComplex* cval, int size)
 	}
 } 
 
-
 /** 
  * LET'S do the above with a cuFFT callback using the new CUDA6.5
  * callback protocols
  */
 
-__device__ void dbcPointwiseSqrCB(size_t offset, void *dataOut,
+__device__ void dbcPointwiseSqrCB(void *dataOut, size_t offset,
 									  dbComplex element, void *callerInfo,
 									  void *sharedPointer) {
    dbComplex temp = element;
@@ -537,9 +496,9 @@ __device__ void dbcPointwiseSqrCB(size_t offset, void *dataOut,
    ((dbComplex *)dataOut)[offset] = element;
 }
 
-__device__ cufftCallbackStoreZ csquareCBptr = (cufftCallbackStoreZ) dbcPointwiseSqrCB;
+__device__ cufftCallbackStoreZ csquareCBptr = dbcPointwiseSqrCB;
 
-__device__ dbComplex dbcPointwiseSqrLoadCB(size_t offset, void *dataIn,
+__device__ dbComplex dbcPointwiseSqrLoadCB(void *dataIn, size_t offset,
 										  void *callerInfo, void *sharedPointer) {
    dbComplex ret, element = ((dbComplex *) dataIn)[offset];
    ret.x = element.x*element.x - element.y*element.y;
@@ -547,13 +506,15 @@ __device__ dbComplex dbcPointwiseSqrLoadCB(size_t offset, void *dataIn,
    return ret;
 }
 
-__device__ cufftCallbackLoadZ csquareLOADCBptr = (cufftCallbackLoadZ) dbcPointwiseSqrLoadCB;
+__device__ cufftCallbackLoadZ csquareLOADCBptr = dbcPointwiseSqrLoadCB;
 
 /**
  * compute A and Ainv in extended precision, cast to doubles
  *   and load them to the host arrays
- * Uses dd_real 128-bit double-doubles to avoid catastropic cancellation errors
+ * 1)  Uses dd_real 128-bit double-doubles to avoid catastropic cancellation errors
  *   for non-power-of-two FFT lengths
+ * 2)  We include the FFT 1/N scaling with
+ *   host_ainv and pull it out of the pointwiseSqrAndScale code
  */
 static __host__ void computeWeightVectors(double *host_A, double *host_Ainv, int testPrime, int size) {
 
@@ -570,6 +531,13 @@ static __host__ void computeWeightVectors(double *host_A, double *host_Ainv, int
 	}
 }
 
+/*
+ * In bitsPerWord, we use a bit-vector:
+ *    0 -- low base word
+ *    1 -- high base word
+ * Where the positions 0=current, 1=next, 2=nextnext, etc.
+ *    The BASE_HI, BASE_LO, HI_BITS, LO_BITS are global constants.
+ */
 static __host__ void computeBitsPerWord(int testPrime, int *bitsPerWord, int size) {
 
 	double PoverN = testPrime/(double)size;
@@ -727,14 +695,14 @@ float errorTrial(int testIterations, int testPrime, int signalSize) {
 	dbReal *dev_A, *dev_Ainv;
 	unsigned char *bitsPerWord8;
 	long long int *llint_signal;
-	checkCudaErrors(cudaMalloc((void**)&i_signalOUT, i_sizeOUT));
-	checkCudaErrors(cudaMalloc((void**)&d_signal, d_size));
-	checkCudaErrors(cudaMalloc((void**)&z_signal, z_size));
+	checkCudaErrors(cudaMalloc(&i_signalOUT, i_sizeOUT));
+	checkCudaErrors(cudaMalloc(&d_signal, d_size));
+	checkCudaErrors(cudaMalloc(&z_signal, z_size));
 
-	checkCudaErrors(cudaMalloc((void**)&dev_A, d_size));
-	checkCudaErrors(cudaMalloc((void**)&dev_Ainv, d_size));
-	checkCudaErrors(cudaMalloc((void**)&bitsPerWord8, bpw_size));
-	checkCudaErrors(cudaMalloc((void**)&llint_signal, llintSignalSize));
+	checkCudaErrors(cudaMalloc(&dev_A, d_size));
+	checkCudaErrors(cudaMalloc(&dev_Ainv, d_size));
+	checkCudaErrors(cudaMalloc(&bitsPerWord8, bpw_size));
+	checkCudaErrors(cudaMalloc(&llint_signal, llintSignalSize));
 
 	// allocate device memory for DWT weights and base values
 	// CUFFT plan
@@ -1025,11 +993,11 @@ void mersenneTest(int testPrime, int signalSize) {
 
 	unsigned char *bitsPerWord8;
 	long long int *llint_signal;
-	checkCudaErrors(cudaMalloc((void**)&i_signalOUT, i_sizeOUT));
-	checkCudaErrors(cudaMalloc((void**)&d_signal, d_size));
-	checkCudaErrors(cudaMalloc((void**)&z_signal, z_size));
-	checkCudaErrors(cudaMalloc((void**)&bitsPerWord8, bpw_size));
-	checkCudaErrors(cudaMalloc((void**)&llint_signal, llintSignalSize));
+	checkCudaErrors(cudaMalloc(&i_signalOUT, i_sizeOUT));
+	checkCudaErrors(cudaMalloc(&d_signal, d_size));
+	checkCudaErrors(cudaMalloc(&z_signal, z_size));
+	checkCudaErrors(cudaMalloc(&bitsPerWord8, bpw_size));
+	checkCudaErrors(cudaMalloc(&llint_signal, llintSignalSize));
 
 	// allocate device memory for DWT weights and base values
 	// CUFFT plan
@@ -1038,7 +1006,7 @@ void mersenneTest(int testPrime, int signalSize) {
 	checkCudaErrors(cufftPlan1d(&plan2, signalSize, CUFFT_TYPEINVERSE, 1));
 
 	/** xxAT ** get callbackPtr for fftCallback squaring */
-	/*	
+
 	cufftCallbackStoreZ hostCopyPtr;
    	checkCudaErrors(cudaMemcpyFromSymbol(&hostCopyPtr, csquareCBptr,
 										 sizeof(hostCopyPtr)));
@@ -1048,18 +1016,6 @@ void mersenneTest(int testPrime, int signalSize) {
 	fflush(stderr);
    	checkCudaErrors(cufftXtSetCallback(plan1, (void **) pters,
 	   								   CUFFT_CB_ST_COMPLEX_DOUBLE, NULL));
-	*/
-
-	cufftCallbackLoadZ hostCopyPtr;
-   	checkCudaErrors(cudaMemcpyFromSymbol(&hostCopyPtr, csquareLOADCBptr,
-										 sizeof(hostCopyPtr)));
-	cufftCallbackLoadZ pters[1];
-	pters[0] = hostCopyPtr;
-	fprintf(stderr, "The host pointer to the device function is %d\n", hostCopyPtr);
-	fflush(stderr);
-	//   	checkCudaErrors(cufftXtSetCallback(plan2, (void **) pters,
-	//   								   CUFFT_CB_LD_COMPLEX_DOUBLE, NULL));
-
 	// Array for high-bit carry out
 	int *i_hiBitArr;
 	checkCudaErrors(cudaMalloc((void**)&i_hiBitArr, sizeof(int)*signalSize));
@@ -1091,12 +1047,6 @@ void mersenneTest(int testPrime, int signalSize) {
 		// Transform signal
 		checkCudaErrors(CUFFT_EXECFORWARD(plan1, (dbReal *)d_signal, (dbComplex *)z_signal));
 		getLastCudaError("Kernel execution failed [ CUFFT_EXECFORWARD ]");
-
-		//fprintf(stderr, "Completed one forward fft at iteration %d\n", iter);
-		// fflush(stderr);
-		// Multiply the coefficients componentwise
-   		dbcPointwiseSqr<<<numFFTblocks, T_PER_B>>>(z_signal, signalSize/2 + 1);
-   		getLastCudaError("Kernel execution failed [ ComplexPointwiseSqr ]");
 
 		// Transform signal back
 		checkCudaErrors(CUFFT_EXECINVERSE(plan2, (dbComplex *)z_signal, (dbReal *)d_signal));
