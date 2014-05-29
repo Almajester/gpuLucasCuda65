@@ -175,7 +175,7 @@
 * 5/29/2014:
 *   Bug in code because of incorrect callback function signature in CUFFT documentation
 *   example.  Fixed.  Now code works.  With pointwise squaring in forward FFT:
-*    M3021377 to   608.9 sec.  Nice.
+*    M3021377 to   605.9 sec.  Nice.
 */
 
 // includes, system
@@ -468,25 +468,10 @@ int main(int argc, char** argv)
  *   NOTE:  some changed, moved to IrrBaseBalanced11.cu
  */
 
-// Complex pointwise multiplication
-static __global__ void dbcPointwiseSqr(dbComplex* cval, int size)
-{
-	dbComplex c, temp;
-	const int tid = blockIdx.x*blockDim.x + threadIdx.x;
-	if (tid < size) {
-		temp = cval[tid];
-		c.y = 2.0*temp.x*temp.y;
-		//c.x = (temp.x + temp.y)*(temp.x - temp.y);  xxAT ??
-		c.x = temp.x*temp.x - temp.y*temp.y;
-		cval[tid] = c;
-	}
-} 
-
 /** 
  * LET'S do the above with a cuFFT callback using the new CUDA6.5
  * callback protocols
  */
-
 __device__ void dbcPointwiseSqrCB(void *dataOut, size_t offset,
 									  dbComplex element, void *callerInfo,
 									  void *sharedPointer) {
@@ -496,7 +481,7 @@ __device__ void dbcPointwiseSqrCB(void *dataOut, size_t offset,
    ((dbComplex *)dataOut)[offset] = element;
 }
 
-__device__ cufftCallbackStoreZ csquareCBptr = dbcPointwiseSqrCB;
+__managed__ __device__ cufftCallbackStoreZ csquareCBptr = dbcPointwiseSqrCB;
 
 __device__ dbComplex dbcPointwiseSqrLoadCB(void *dataIn, size_t offset,
 										  void *callerInfo, void *sharedPointer) {
@@ -506,7 +491,7 @@ __device__ dbComplex dbcPointwiseSqrLoadCB(void *dataIn, size_t offset,
    return ret;
 }
 
-__device__ cufftCallbackLoadZ csquareLOADCBptr = dbcPointwiseSqrLoadCB;
+__managed__ __device__ cufftCallbackLoadZ csquareLOADCBptr = dbcPointwiseSqrLoadCB;
 
 /**
  * compute A and Ainv in extended precision, cast to doubles
@@ -710,6 +695,10 @@ float errorTrial(int testIterations, int testPrime, int signalSize) {
 	checkCudaErrors(cufftPlan1d(&plan1, signalSize, CUFFT_TYPEFORWARD, 1));
 	checkCudaErrors(cufftPlan1d(&plan2, signalSize, CUFFT_TYPEINVERSE, 1));
 
+	// Set cufft callback for squaring
+   	checkCudaErrors(cufftXtSetCallback(plan1, (void **) &csquareCBptr,
+	   								   CUFFT_CB_ST_COMPLEX_DOUBLE, NULL));
+
 	// Variables for the GPK carry-adder
 	// Array for high-bit carry out
 	int *i_hiBitArr;
@@ -771,17 +760,11 @@ float errorTrial(int testIterations, int testPrime, int signalSize) {
 			checkCudaErrors(cudaEventRecord(start, 0));
 
 			// Transform signal
-			checkCudaErrors(CUFFT_EXECFORWARD(plan1, (dbReal *)d_signal, (dbComplex *)z_signal));
+			checkCudaErrors(CUFFT_EXECFORWARD(plan1, d_signal, z_signal));
 			getLastCudaError("Kernel execution failed [ CUFFT_EXECFORWARD ]");
-			// Multiply the coefficients componentwise
-			int numFFTblocks = (signalSize/2 + 1)/T_PER_B + 1;
-
-			dbcPointwiseSqr<<<numFFTblocks, T_PER_B>>>(z_signal, signalSize/2 + 1);
-
-			getLastCudaError("Kernel execution failed [ ComplexPointwiseSqr ]");
 
 			// Transform signal back
-			checkCudaErrors(CUFFT_EXECINVERSE(plan2, (dbComplex *)z_signal, (dbReal *)d_signal));
+			checkCudaErrors(CUFFT_EXECINVERSE(plan2, z_signal, d_signal));
 			getLastCudaError("Kernel execution failed [ CUFFT_EXECINVERSE ]");
 
 			checkCudaErrors(cudaEventRecord(stop, 0));
@@ -819,16 +802,11 @@ float errorTrial(int testIterations, int testPrime, int signalSize) {
 		}
 		else {
 			// Transform signal
-			checkCudaErrors(CUFFT_EXECFORWARD(plan1, (dbReal *)d_signal, (dbComplex *)z_signal));
+			checkCudaErrors(CUFFT_EXECFORWARD(plan1, d_signal, z_signal));
 			getLastCudaError("Kernel execution failed [ CUFFT_EXECFORWARD ]");
-			// Multiply the coefficients componentwise
-			int numFFTblocks = (signalSize/2 + 1)/T_PER_B + 1;
-
-			dbcPointwiseSqr<<<numFFTblocks, T_PER_B>>>(z_signal, signalSize/2 + 1);
-			getLastCudaError("Kernel execution failed [ ComplexPointwiseSqr ]");
 
 			// Transform signal back
-			checkCudaErrors(CUFFT_EXECINVERSE(plan2, (dbComplex *)z_signal, (dbReal *)d_signal));
+			checkCudaErrors(CUFFT_EXECINVERSE(plan2, z_signal, d_signal));
 			getLastCudaError("Kernel execution failed [ CUFFT_EXECINVERSE ]");
 
 			invDWTproductMinus2<<<numBlocks, T_PER_B>>>(llint_signal, d_signal, dev_Ainv, signalSize);
@@ -1005,16 +983,11 @@ void mersenneTest(int testPrime, int signalSize) {
 	checkCudaErrors(cufftPlan1d(&plan1, signalSize, CUFFT_TYPEFORWARD, 1));
 	checkCudaErrors(cufftPlan1d(&plan2, signalSize, CUFFT_TYPEINVERSE, 1));
 
-	/** xxAT ** get callbackPtr for fftCallback squaring */
-
-	cufftCallbackStoreZ hostCopyPtr;
-   	checkCudaErrors(cudaMemcpyFromSymbol(&hostCopyPtr, csquareCBptr,
-										 sizeof(hostCopyPtr)));
-	cufftCallbackStoreZ pters[1];
-	pters[0] = hostCopyPtr;
-	fprintf(stderr, "The host pointer to the device function is %d\n", hostCopyPtr);
-	fflush(stderr);
-   	checkCudaErrors(cufftXtSetCallback(plan1, (void **) pters,
+	/** xxAT: set callbackPtr for fftCallback squaring
+	 *    where csquareCBptr is a managed variable of type cufftCallbackStoreZ
+	 *    (no memcopysymbol needed!)
+	 */
+   	checkCudaErrors(cufftXtSetCallback(plan1, (void **) &csquareCBptr,
 	   								   CUFFT_CB_ST_COMPLEX_DOUBLE, NULL));
 	// Array for high-bit carry out
 	int *i_hiBitArr;
@@ -1045,11 +1018,11 @@ void mersenneTest(int testPrime, int signalSize) {
 	for (unsigned int iter = 2; iter < testPrime; iter++) {
 
 		// Transform signal
-		checkCudaErrors(CUFFT_EXECFORWARD(plan1, (dbReal *)d_signal, (dbComplex *)z_signal));
+		checkCudaErrors(CUFFT_EXECFORWARD(plan1, d_signal, z_signal));
 		getLastCudaError("Kernel execution failed [ CUFFT_EXECFORWARD ]");
 
 		// Transform signal back
-		checkCudaErrors(CUFFT_EXECINVERSE(plan2, (dbComplex *)z_signal, (dbReal *)d_signal));
+		checkCudaErrors(CUFFT_EXECINVERSE(plan2, z_signal, d_signal));
 		getLastCudaError("Kernel execution failed [ CUFFT_EXECINVERSE ]");
 
 		//    Every 1/50th of the way done, do some error testing
