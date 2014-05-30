@@ -947,7 +947,6 @@ void mersenneTest(int testPrime, int signalSize) {
 
 	// We assume throughout that signalSize is divisible by T_PER_B
 	const int numBlocks = signalSize/T_PER_B;
-	const int numFFTblocks = (signalSize/2 + 1)/T_PER_B + 1;
 
 	// Allocate host memory to return signal as necessary
 	int *h_signalOUT = (int *) malloc(sizeof(int)*signalSize);
