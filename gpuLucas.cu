@@ -493,6 +493,19 @@ __device__ dbComplex dbcPointwiseSqrLoadCB(void *dataIn, size_t offset,
 
 __managed__ __device__ cufftCallbackLoadZ csquareLOADCBptr = dbcPointwiseSqrLoadCB;
 
+// This includes pseudobalance by adding hi order terms from last rebalancing.
+__device__ dbReal intToDoubleIBDWT_LoadCB(void *dataIn, size_t offset,
+											void *callerInfo, void *sharedPointer) {
+		//double *dArr, int *iArr, int *iHiArr, double *aArr, int size) {
+
+	const int tid = blockIdx.x*blockDim.x + threadIdx.x;
+
+	int ival = iArr[tid];
+	ival += (tid == 0 ? iHiArr[size - 1] : iHiArr[tid - 1]);
+
+	dArr[tid] = ival*aArr[tid];
+}
+
 /**
  * compute A and Ainv in extended precision, cast to doubles
  *   and load them to the host arrays
@@ -551,18 +564,20 @@ static __host__ void computeBitsPerWordVectors(unsigned char *bitsPerWord8, int 
 	}	
 }
 
-// load values of int array into double array for FFT.  Low-order 2 bytes go in lowest numbered
-//     position in dArr
-static __global__ void loadValue4ToFFTarray(double *dArr, int size) {
+// load the value 4 to the i_Arr array for LL initialization
+// This is already balanced, and already multiplied by a_0 = 1 for DWT
+// Load zeros to dArr and iHiArr arrays
+static __global__ void initLucasLehmerArrays(double *dArr, int *iArr, int *iHiArr, int size) {
 
 	const int tid = blockIdx.x*blockDim.x + threadIdx.x;
 
 	if (tid == 0)
-		dArr[tid] = 4.0;
+		iArr[tid] = 4;
 	else
-		dArr[tid] = 0.0;
+		iArr[tid] = 0.0;
+	dArr[tid] = 0.0;
+	iHiArr[tid] = 0;
 }
-
 
 // This includes pseudobalance by adding hi order terms from last rebalancing.
 static __global__ void loadIntToDoubleIBDWT(double *dArr, int *iArr, int *iHiArr, double *aArr, int size) {
@@ -744,10 +759,11 @@ float errorTrial(int testIterations, int testPrime, int signalSize) {
 	for (int i = 0; i < 20; i++) 
 		printf("ainv[%d] = %f\n", i, h_Ainv[i]);
 
-	// load the int array to the doubles for FFT
+	// load the value 4 to the i_signalOUT array for LL initialization
 	// This is already balanced, and already multiplied by a_0 = 1 for DWT
-	loadValue4ToFFTarray<<<numBlocks, T_PER_B>>>(d_signal, signalSize);
-	getLastCudaError("Kernel execution failed [ loadValue4ToFFTarray ]");
+	// Load zeros to d_signal and i_hiBitArr arrays
+	initLucasLehmerArrays<<<numBlocks, T_PER_B>>>(d_signal, i_signalOUT, i_hiBitArr, signalSize);
+	getLastCudaError("Kernel execution failed [ initLucasLehmerArrays ]");
 
 	float totalTime = 0;
 	// Loop M-2 times
@@ -758,6 +774,8 @@ float errorTrial(int testIterations, int testPrime, int signalSize) {
 			checkCudaErrors(cudaEventCreate(&start));
 			checkCudaErrors(cudaEventCreate(&stop));
 			checkCudaErrors(cudaEventRecord(start, 0));
+
+			loadIntToDoubleIBDWT<<<numBlocks, T_PER_B>>>(d_signal, i_signalOUT, i_hiBitArr, dev_A, signalSize);
 
 			// Transform signal
 			checkCudaErrors(CUFFT_EXECFORWARD(plan1, d_signal, z_signal));
@@ -771,7 +789,7 @@ float errorTrial(int testIterations, int testPrime, int signalSize) {
 			checkCudaErrors(cudaEventSynchronize(stop));
 			float elapsedTime;
 			checkCudaErrors(cudaEventElapsedTime(&elapsedTime, start, stop));
-			printf("Time for FFT, squaring, INV FFT:  %3.3f ms\n", elapsedTime);
+			printf("Time for to load, do FFT, squaring, INV FFT:  %3.3f ms\n", elapsedTime);
 			totalTime += elapsedTime;
 			checkCudaErrors(cudaEventDestroy(start));
 			checkCudaErrors(cudaEventDestroy(stop));
@@ -812,8 +830,6 @@ float errorTrial(int testIterations, int testPrime, int signalSize) {
 			invDWTproductMinus2<<<numBlocks, T_PER_B>>>(llint_signal, d_signal, dev_Ainv, signalSize);
 						sliceAndDice<<<numBlocks, T_PER_B>>>(i_signalOUT, i_hiBitArr, llint_signal, bitsPerWord8, signalSize);
 		}
-
-		loadIntToDoubleIBDWT<<<numBlocks, T_PER_B>>>(d_signal, i_signalOUT, i_hiBitArr, dev_A, signalSize);
 	}
 	
 	// DONE!  Final copy out from GPU, since not done by default as for CPU stages
@@ -1008,14 +1024,17 @@ void mersenneTest(int testPrime, int signalSize) {
 	checkCudaErrors(cudaMallocManaged(&dev_Ainv, signalSize*sizeof(double)));
 	computeWeightVectors(dev_A, dev_Ainv, testPrime, signalSize);
 	
-	// load the int array to the doubles for FFT
+	// load the value 4 to the i_signalOUT array for LL initialization
 	// This is already balanced, and already multiplied by a_0 = 1 for DWT
-	loadValue4ToFFTarray<<<numBlocks, T_PER_B>>>(d_signal, signalSize);
-	getLastCudaError("Kernel execution failed [ loadValue4ToFFTarray ]");
+	// Load zeros to d_signal and i_hiBitArr arrays
+	initLucasLehmerArrays<<<numBlocks, T_PER_B>>>(d_signal, i_signalOUT, i_hiBitArr, signalSize);
+	getLastCudaError("Kernel execution failed [ initLucasLehmerArrays ]");
 
 	// Loop M-2 times
 	for (unsigned int iter = 2; iter < testPrime; iter++) {
 
+		// Add i_signalOUT and i_hiBitArr into d_signal for next iteration of Lucas-Lehmer
+		loadIntToDoubleIBDWT<<<numBlocks, T_PER_B>>>(d_signal, i_signalOUT, i_hiBitArr, dev_A, signalSize);
 		// Transform signal
 		checkCudaErrors(CUFFT_EXECFORWARD(plan1, d_signal, z_signal));
 		getLastCudaError("Kernel execution failed [ CUFFT_EXECFORWARD ]");
@@ -1037,8 +1056,6 @@ void mersenneTest(int testPrime, int signalSize) {
 
 		// REBALANCE llint TIMING
 		sliceAndDice<<<numBlocks, T_PER_B>>>(i_signalOUT, i_hiBitArr, llint_signal, bitsPerWord8, signalSize);
-
-		loadIntToDoubleIBDWT<<<numBlocks, T_PER_B>>>(d_signal, i_signalOUT, i_hiBitArr, dev_A, signalSize);
 	}
 
 	// DONE!  Final copy out from GPU, since not done by default as for CPU stages
