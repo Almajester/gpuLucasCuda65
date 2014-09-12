@@ -176,6 +176,10 @@
 *   Bug in code because of incorrect callback function signature in CUFFT documentation
 *   example.  Fixed.  Now code works.  With pointwise squaring in forward FFT:
 *    M3021377 to   605.9 sec.  Nice.
+* 6/4/2014:
+*   Added second callback to forward FFT to load and carry from previous iteration
+*   ...made code run slower...passes in pointer-structure to callback function with
+*   other arrays.  Ran in 768.x seconds.  Does work, however.
 */
 
 // includes, system
@@ -313,6 +317,14 @@ typedef cufftDoubleReal dbReal;
 #define CUFFT_TYPEINVERSE CUFFT_Z2D
 #define CUFFT_EXECFORWARD cufftExecD2Z
 #define CUFFT_EXECINVERSE cufftExecZ2D
+
+typedef struct ArrPointers {
+	dbReal *dArr;
+	int *iArr;
+	int *iHiArr;
+	dbReal *aArr;
+	int size;
+} ArrPointers;
 
 /**
  * The sliceAndDice() function pointer is used to call the correct templated
@@ -496,15 +508,16 @@ __managed__ __device__ cufftCallbackLoadZ csquareLOADCBptr = dbcPointwiseSqrLoad
 // This includes pseudobalance by adding hi order terms from last rebalancing.
 __device__ dbReal intToDoubleIBDWT_LoadCB(void *dataIn, size_t offset,
 											void *callerInfo, void *sharedPointer) {
-		//double *dArr, int *iArr, int *iHiArr, double *aArr, int size) {
 
-	const int tid = blockIdx.x*blockDim.x + threadIdx.x;
+	ArrPointers *p = (ArrPointers *) callerInfo;
+	int size = p->size;
+	int ival = p->iArr[offset];
+	ival += (offset == 0 ? p->iHiArr[size - 1] : p->iHiArr[offset - 1]);
 
-	int ival = iArr[tid];
-	ival += (tid == 0 ? iHiArr[size - 1] : iHiArr[tid - 1]);
-
-	dArr[tid] = ival*aArr[tid];
+	return ival*p->aArr[offset];
 }
+
+__managed__ __device__ cufftCallbackLoadD IBDWT_LOADCBptr = intToDoubleIBDWT_LoadCB;
 
 /**
  * compute A and Ainv in extended precision, cast to doubles
@@ -695,14 +708,19 @@ float errorTrial(int testIterations, int testPrime, int signalSize) {
 	dbReal *dev_A, *dev_Ainv;
 	unsigned char *bitsPerWord8;
 	long long int *llint_signal;
-	checkCudaErrors(cudaMalloc(&i_signalOUT, i_sizeOUT));
-	checkCudaErrors(cudaMalloc(&d_signal, d_size));
+	int *i_hiBitArr;
+	checkCudaErrors(cudaMallocManaged(&i_signalOUT, i_sizeOUT));
+	checkCudaErrors(cudaMallocManaged((void**)&i_hiBitArr, sizeof(int)*signalSize));
+	checkCudaErrors(cudaMallocManaged(&d_signal, d_size));
 	checkCudaErrors(cudaMalloc(&z_signal, z_size));
 
-	checkCudaErrors(cudaMalloc(&dev_A, d_size));
+	checkCudaErrors(cudaMallocManaged(&dev_A, d_size));
 	checkCudaErrors(cudaMalloc(&dev_Ainv, d_size));
 	checkCudaErrors(cudaMalloc(&bitsPerWord8, bpw_size));
 	checkCudaErrors(cudaMalloc(&llint_signal, llintSignalSize));
+
+	ArrPointers *pArr;
+	checkCudaErrors(cudaMallocManaged(&pArr, sizeof(ArrPointers)));
 
 	// allocate device memory for DWT weights and base values
 	// CUFFT plan
@@ -713,13 +731,6 @@ float errorTrial(int testIterations, int testPrime, int signalSize) {
 	// Set cufft callback for squaring
    	checkCudaErrors(cufftXtSetCallback(plan1, (void **) &csquareCBptr,
 	   								   CUFFT_CB_ST_COMPLEX_DOUBLE, NULL));
-
-	// Variables for the GPK carry-adder
-	// Array for high-bit carry out
-	int *i_hiBitArr;
-	checkCudaErrors(cudaMalloc((void**)&i_hiBitArr, sizeof(int)*signalSize));
-
-	// CUDPP plan for parallel-scan int GPK adds
 	
 	//make host and device arrays for error computation
 	float *dev_errArr;
@@ -875,6 +886,7 @@ float errorTrial(int testIterations, int testPrime, int signalSize) {
 	checkCudaErrors(cudaFree(llint_signal));
 
 	checkCudaErrors(cudaFree(dev_errArr));
+	checkCudaErrors(cudaFree(pArr));
 	
 	return totalTime/50;
 }
@@ -986,11 +998,27 @@ void mersenneTest(int testPrime, int signalSize) {
 
 	unsigned char *bitsPerWord8;
 	long long int *llint_signal;
-	checkCudaErrors(cudaMalloc(&i_signalOUT, i_sizeOUT));
-	checkCudaErrors(cudaMalloc(&d_signal, d_size));
+	int *i_hiBitArr;
+	checkCudaErrors(cudaMallocManaged(&i_signalOUT, i_sizeOUT));
+	checkCudaErrors(cudaMallocManaged((void**)&i_hiBitArr, sizeof(int)*signalSize));
+	checkCudaErrors(cudaMallocManaged(&d_signal, d_size));
 	checkCudaErrors(cudaMalloc(&z_signal, z_size));
 	checkCudaErrors(cudaMalloc(&bitsPerWord8, bpw_size));
 	checkCudaErrors(cudaMalloc(&llint_signal, llintSignalSize));
+
+	// compute weights in extended precision, essential for non-power-of-two signal_size
+	dbReal *dev_A, *dev_Ainv;
+	checkCudaErrors(cudaMallocManaged(&dev_A, signalSize*sizeof(double)));
+	checkCudaErrors(cudaMallocManaged(&dev_Ainv, signalSize*sizeof(double)));
+	computeWeightVectors(dev_A, dev_Ainv, testPrime, signalSize);
+
+	ArrPointers *pArr;
+	checkCudaErrors(cudaMallocManaged(&pArr, sizeof(ArrPointers)));
+	pArr->aArr = dev_A;
+	pArr->dArr = d_signal;
+	pArr->iArr = i_signalOUT;
+	pArr->iHiArr = i_hiBitArr;
+	pArr->size = signalSize;
 
 	// allocate device memory for DWT weights and base values
 	// CUFFT plan
@@ -998,15 +1026,17 @@ void mersenneTest(int testPrime, int signalSize) {
 	checkCudaErrors(cufftPlan1d(&plan1, signalSize, CUFFT_TYPEFORWARD, 1));
 	checkCudaErrors(cufftPlan1d(&plan2, signalSize, CUFFT_TYPEINVERSE, 1));
 
+
 	/** xxAT: set callbackPtr for fftCallback squaring
 	 *    where csquareCBptr is a managed variable of type cufftCallbackStoreZ
 	 *    (no memcopysymbol needed!)
 	 */
    	checkCudaErrors(cufftXtSetCallback(plan1, (void **) &csquareCBptr,
 	   								   CUFFT_CB_ST_COMPLEX_DOUBLE, NULL));
-	// Array for high-bit carry out
-	int *i_hiBitArr;
-	checkCudaErrors(cudaMalloc((void**)&i_hiBitArr, sizeof(int)*signalSize));
+
+//   	checkCudaErrors(cufftXtSetCallback(plan1, (void **) &IBDWT_LOADCBptr,
+//  									   CUFFT_CB_LD_REAL_DOUBLE, (void **) &pArr));
+
 
 	// Error-checking device and host arrays
 	float *dev_errArr; 
@@ -1018,12 +1048,6 @@ void mersenneTest(int testPrime, int signalSize) {
 	computeBitsPerWordVectors(h_bitsPerWord8, h_bitsPerWord, signalSize);
 	checkCudaErrors(cudaMemcpy(bitsPerWord8, h_bitsPerWord8, bpw_size, cudaMemcpyHostToDevice));
 
-	// compute weights in extended precision, essential for non-power-of-two signal_size
-	dbReal *dev_A, *dev_Ainv;
-	checkCudaErrors(cudaMallocManaged(&dev_A, signalSize*sizeof(double)));
-	checkCudaErrors(cudaMallocManaged(&dev_Ainv, signalSize*sizeof(double)));
-	computeWeightVectors(dev_A, dev_Ainv, testPrime, signalSize);
-	
 	// load the value 4 to the i_signalOUT array for LL initialization
 	// This is already balanced, and already multiplied by a_0 = 1 for DWT
 	// Load zeros to d_signal and i_hiBitArr arrays
@@ -1115,4 +1139,5 @@ void mersenneTest(int testPrime, int signalSize) {
 	checkCudaErrors(cudaFree(llint_signal));
 
 	checkCudaErrors(cudaFree(dev_errArr));
+	checkCudaErrors(cudaFree(pArr));
 }
