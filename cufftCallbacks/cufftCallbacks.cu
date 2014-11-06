@@ -103,7 +103,7 @@ __device__ void dbcPointwiseSqrCB(void *dataOut, size_t offset,
 
 __device__ cufftCallbackStoreZ csquareCBptr = dbcPointwiseSqrCB;
 
-__device__ dbComplex dbcPointwiseSqrLoadCB(size_t offset, void *dataIn,
+__device__ dbComplex dbcPointwiseSqrLoadCB(void *dataIn, size_t offset,
 										  void *callerInfo, void *sharedPointer) {
    dbComplex ret, element = ((dbComplex *) dataIn)[offset];
    ret.x = element.x*element.x - element.y*element.y;
